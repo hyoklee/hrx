@@ -1,4 +1,4 @@
-|PL|On|Pr|
+# Glossary
 PL: Processing Level
 CN: Count
 PR: Product
