@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generate DMR.
+# Generate DMR. Run ln.sh first.
 filename="$1"
 cd /scr/hyoklee/src/hyrax/bes/modules/hdf5_handler/bes-testsuite/h5.nasa.default.dap4
 cp /scr/hyoklee/src/hyrax/bes/modules/hdf5_handler/data/$filename input/
