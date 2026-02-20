@@ -1,0 +1,3 @@
+Dataset {
+    Float32 /image0[20][20];
+} float32.tif;

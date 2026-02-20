@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<Dataset xmlns="http://xml.opendap.org/ns/DAP/4.0#" dapVersion="4.0" dmrVersion="2.0" name="byte.tif">
+    <Byte name="image0">
+        <Dim size="20"/>
+        <Dim size="20"/>
+    </Byte>
+</Dataset>
