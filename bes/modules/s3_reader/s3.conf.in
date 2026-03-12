@@ -1,0 +1,45 @@
+BES.Include=dap.conf
+
+
+BES.modules+=s3
+BES.module.s3=@bes_modules_dir@/libs3_reader.so
+
+# Inject Data URLs into the dmr++ documents.
+s3.inject_data_urls=true
+
+# ============================================================
+# S3 Catalog — lists objects in an S3 bucket as a BES catalog
+# ============================================================
+
+# Required: name of the S3 bucket to expose as a catalog
+S3.Catalog.Bucket = hyrax-data
+
+# Endpoint override for localstack or other S3-compatible services.
+# Leave commented out (or empty) to use the real AWS endpoint.
+S3.Catalog.Endpoint = http://localhost:4566
+
+# AWS region
+S3.Catalog.Region = us-east-1
+
+# Credentials for localstack (dummy values work with default localstack config)
+S3.Catalog.AWSKeyId = test
+S3.Catalog.AWSSecretKey = test
+
+# Enable two-tier listing cache (MemoryCache + FileCache)
+S3.Catalog.UseCache = true
+
+# Memory cache: max entries and how many to purge when full
+S3.Catalog.MemCacheSize.Items = 100
+S3.Catalog.MemCachePurge.Items = 20
+
+# File cache: directory, max size (MB) and purge target (MB)
+S3.Catalog.FileCacheDir = /tmp/hyrax_s3_catalog_cache
+S3.Catalog.FileCacheSize.MB = 100
+S3.Catalog.FileCachePurge.MB = 20
+
+# BES catalog utils configuration for the "s3" catalog:
+# RootDirectory must point to a valid directory (used by BESCatalogUtils internally).
+BES.Catalog.s3.RootDirectory = /
+
+# TypeMatch: maps handler names to filename regexes for HDF5 data detection
+BES.Catalog.s3.TypeMatch = h5:.*\.(h5|he5|HDF5)(\.bz2|\.gz|\.Z)?$;
