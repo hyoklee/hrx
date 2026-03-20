@@ -25,6 +25,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <ctime>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -61,6 +62,7 @@ int                        BESS3Catalog::d_mem_cache_purge    = 20;
 long long                  BESS3Catalog::d_file_cache_size_bytes  = 100LL * ::MEGABYTE;
 long long                  BESS3Catalog::d_file_cache_purge_bytes =  20LL * ::MEGABYTE;
 string                     BESS3Catalog::d_file_cache_dir     = "/tmp/hyrax_s3_catalog_cache";
+int                        BESS3Catalog::d_cache_ttl_seconds   = 60;
 
 // ============================================================
 // Constructor — read config, initialise caches once
@@ -105,6 +107,8 @@ BESS3Catalog::BESS3Catalog(const string &catalog_name)
             ERROR_LOG("BESS3Catalog: failed to initialise file cache at " + d_file_cache_dir + "\n");
         }
     }
+
+    d_cache_ttl_seconds = TheBESKeys::read_int_key(S3_CATALOG_CACHE_TTL_KEY, d_cache_ttl_seconds);
 }
 
 // ============================================================
@@ -138,10 +142,13 @@ string BESS3Catalog::make_cache_key(const string &bucket, const string &prefix) 
 }
 
 /**
- * Serialise a listing as newline-delimited records: key|size|lmt|is_prefix
+ * Serialise a listing as newline-delimited records.
+ * First line: "T:<unix_timestamp>" for TTL checking.
+ * Remaining lines: key|size|lmt|is_prefix
  */
 string BESS3Catalog::serialize(const vector<S3ObjectInfo> &items) {
     ostringstream oss;
+    oss << "T:" << static_cast<long long>(std::time(nullptr)) << '\n';
     for (const auto &item : items) {
         oss << item.key << '|' << item.size << '|' << item.last_modified
             << '|' << (item.is_prefix ? '1' : '0') << '\n';
@@ -150,14 +157,15 @@ string BESS3Catalog::serialize(const vector<S3ObjectInfo> &items) {
 }
 
 /**
- * Deserialise the newline-delimited format produced by serialize().
+ * Deserialise the format produced by serialize().
+ * Skips the leading "T:<timestamp>" line and any empty lines.
  */
 vector<S3ObjectInfo> BESS3Catalog::deserialize(const string &data) {
     vector<S3ObjectInfo> items;
     istringstream iss(data);
     string line;
     while (getline(iss, line)) {
-        if (line.empty()) continue;
+        if (line.empty() || line[0] == 'T') continue;  // skip timestamp line
         // Parse: key|size|lmt|is_prefix
         size_t p1 = line.find('|');
         if (p1 == string::npos) continue;
@@ -177,6 +185,24 @@ vector<S3ObjectInfo> BESS3Catalog::deserialize(const string &data) {
 }
 
 /**
+ * Return true if cached data has expired according to d_cache_ttl_seconds.
+ * Returns false (not expired) when TTL is 0 or the "T:" header is missing.
+ */
+bool BESS3Catalog::is_expired(const string &data) const {
+    if (d_cache_ttl_seconds <= 0) return false;
+    // First line must be "T:<timestamp>"
+    if (data.size() < 3 || data[0] != 'T' || data[1] != ':') return false;
+    size_t nl = data.find('\n');
+    const string ts_str = data.substr(2, nl == string::npos ? string::npos : nl - 2);
+    try {
+        long long cached_time = stoll(ts_str);
+        return (static_cast<long long>(std::time(nullptr)) - cached_time) >= d_cache_ttl_seconds;
+    } catch (...) {
+        return false;
+    }
+}
+
+/**
  * Fetch the object listing for an S3 prefix, consulting the two-tier cache first.
  */
 vector<S3ObjectInfo> BESS3Catalog::get_listing(const string &s3_prefix) const {
@@ -185,7 +211,7 @@ vector<S3ObjectInfo> BESS3Catalog::get_listing(const string &s3_prefix) const {
     if (d_use_cache) {
         // Tier 1: memory cache
         string cached_data;
-        if (d_mem_cache.get(cache_key, cached_data)) {
+        if (d_mem_cache.get(cache_key, cached_data) && !is_expired(cached_data)) {
             BESDEBUG(S3_CATALOG_MODULE, "BESS3Catalog: memory cache hit for " << cache_key << endl);
             return deserialize(cached_data);
         }
@@ -201,8 +227,11 @@ vector<S3ObjectInfo> BESS3Catalog::get_listing(const string &s3_prefix) const {
             while ((n = read(item.get_fd(), buf, sizeof(buf))) > 0)
                 file_data.append(buf, n);
 
-            d_mem_cache.put(cache_key, file_data);
-            return deserialize(file_data);
+            if (!is_expired(file_data)) {
+                d_mem_cache.put(cache_key, file_data);
+                return deserialize(file_data);
+            }
+            BESDEBUG(S3_CATALOG_MODULE, "BESS3Catalog: file cache expired for " << cache_key << endl);
         }
     }
 

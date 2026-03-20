@@ -83,6 +83,7 @@ class BESS3Catalog : public BESCatalog {
     static long long d_file_cache_size_bytes;
     static long long d_file_cache_purge_bytes;
     static std::string d_file_cache_dir;
+    static int d_cache_ttl_seconds;   ///< listing cache TTL (0 = never expire)
 
     // AWS client — one per instance, initialized lazily
     mutable bes::AWS_SDK d_aws;
@@ -99,6 +100,7 @@ class BESS3Catalog : public BESCatalog {
 
     static std::string make_cache_key(const std::string &bucket, const std::string &prefix);
     static std::string path_to_prefix(const std::string &path);
+    bool is_expired(const std::string &cached_data) const;
 
 public:
     explicit BESS3Catalog(const std::string &catalog_name);

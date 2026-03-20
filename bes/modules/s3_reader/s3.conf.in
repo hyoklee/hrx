@@ -37,6 +37,11 @@ S3.Catalog.FileCacheDir = /tmp/hyrax_s3_catalog_cache
 S3.Catalog.FileCacheSize.MB = 100
 S3.Catalog.FileCachePurge.MB = 20
 
+# Cache TTL: how long (seconds) a cached S3 listing remains valid.
+# New objects added to the bucket will appear in the catalog after this interval.
+# Set to 0 to disable expiry (listings cached until evicted by size).
+S3.Catalog.CacheTTL.Seconds = 60
+
 # BES catalog utils configuration for the "s3" catalog:
 # RootDirectory must point to a valid directory (used by BESCatalogUtils internally).
 BES.Catalog.s3.RootDirectory = /

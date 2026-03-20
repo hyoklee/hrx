@@ -53,5 +53,6 @@
 #define S3_CATALOG_FILE_CACHE_DIR_KEY   "S3.Catalog.FileCacheDir"
 #define S3_CATALOG_FILE_CACHE_SIZE_KEY  "S3.Catalog.FileCacheSize.MB"
 #define S3_CATALOG_FILE_CACHE_PURGE_KEY "S3.Catalog.FileCachePurge.MB"
+#define S3_CATALOG_CACHE_TTL_KEY        "S3.Catalog.CacheTTL.Seconds"
 
 #endif // E_S3Names_H
