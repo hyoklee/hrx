@@ -34,6 +34,7 @@
 #include <BESDebug.h>
 #include <BESInternalError.h>
 #include <BESLog.h>
+#include <BESNotFoundError.h>
 #include <BESUtil.h>
 #include <TheBESKeys.h>
 
@@ -283,12 +284,52 @@ BESCatalogEntry *BESS3Catalog::show_catalog(const string & /*container*/, BESCat
 /**
  * Return catalog node for the given path, fetching from S3 (or cache).
  *
- * @param path  Catalog path, e.g. "/" for root, "/subdir/" for a sub-prefix.
+ * When the path maps to an S3 prefix with children, a directory-like node
+ * is returned. When the path matches an existing S3 object (leaf file), a
+ * leaf node is returned. When neither is found, BESNotFoundError is thrown
+ * so that OLFS can fall through to the DAP dispatch handler rather than
+ * treating the path as an empty directory.
+ *
+ * @param path  Catalog path, e.g. "/" for root, "/grid_1_2d.h5" for a file.
+ * @throws BESNotFoundError if the path is neither an S3 prefix nor an object.
  */
 bes::CatalogNode *BESS3Catalog::get_node(const string &path) const {
     const string s3_prefix = path_to_prefix(path);
     auto items = get_listing(s3_prefix);
-    return build_node(path, items);
+
+    // Non-empty listing means this path is a directory-like S3 prefix.
+    if (!items.empty())
+        return build_node(path, items);
+
+    // Empty listing — check whether the path is a leaf object in S3.
+    // s3_prefix has a trailing '/' (added by path_to_prefix); strip it to
+    // get the actual object key.  For the root path, s3_prefix is "" so
+    // there is no key to check.
+    if (!s3_prefix.empty()) {
+        const string key = s3_prefix.substr(0, s3_prefix.size() - 1);
+        init_aws_client();
+        if (d_aws.s3_head_exists(d_bucket, key)) {
+            // It is a leaf file.  Build a single-item node that encodes as
+            // an <item> element so that OLFS recognises it as a dataset.
+            const BESCatalogUtils *utils = get_catalog_utils();
+            // Use the basename for the TypeMatch check (consistent with build_node).
+            size_t slash = key.rfind('/');
+            const string name = (slash != string::npos) ? key.substr(slash + 1) : key;
+            bool is_data = utils ? utils->is_data(name) : false;
+
+            auto *leaf = new bes::CatalogItem(name, 0, BESUtil::get_time(),
+                                               is_data, bes::CatalogItem::leaf);
+            auto *node = new bes::CatalogNode(path);
+            node->set_catalog_name(get_catalog_name());
+            node->set_lmt(BESUtil::get_time());
+            node->set_leaf(leaf);
+            return node;
+        }
+    }
+
+    // Path is neither an S3 prefix nor an object — not found.
+    throw BESNotFoundError("S3 path '" + path + "' not found in bucket '"
+                           + d_bucket + "'.", __FILE__, __LINE__);
 }
 
 /**

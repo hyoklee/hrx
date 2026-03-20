@@ -41,5 +41,7 @@ S3.Catalog.FileCachePurge.MB = 20
 # RootDirectory must point to a valid directory (used by BESCatalogUtils internally).
 BES.Catalog.s3.RootDirectory = /
 
-# TypeMatch: maps handler names to filename regexes for HDF5 data detection
-BES.Catalog.s3.TypeMatch = h5:.*\.(h5|he5|HDF5)(\.bz2|\.gz|\.Z)?$;
+# TypeMatch: maps handler names to filename regexes.
+# HDF5 files are served via their DMR++ sidecar (.h5.dmrpp).
+# DMR++ files can also be accessed directly by the dmrpp handler.
+BES.Catalog.s3.TypeMatch = h5:.*\.(h5|he5|HDF5)(\.bz2|\.gz|\.Z)?$;dmrpp:.*\.dmrpp$;
