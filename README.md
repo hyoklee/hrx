@@ -2,6 +2,15 @@
 
 This repository has patches for Hyrax to test new ideas.
 
+## S3
+
+See [S3](https://github.com/hyoklee/hrx/wiki/S3).
+
+## VOL-GeoTIFF
+
+Patch codes under `bes/`.
+Configure bes with `etc/`.
+
 ## Hyrax DMR++ Test Scripts
 
 Change directory to `h4` or `h5`.
@@ -12,7 +21,3 @@ Use `run.sh` script to execute:
 3. `dmdrpp.sh`
 4. `dds.sh`
 
-## VOL-GeoTIFF
-
-Patch codes under `bes/`.
-Configure bes with `etc/`.
