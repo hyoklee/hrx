@@ -4,11 +4,12 @@ This repository has patches for Hyrax to test new ideas.
 
 ## S3
 
+Serve data directly from S3 bucket.
 See [S3](https://github.com/hyoklee/hrx/wiki/S3).
 
 ## VOL-GeoTIFF
 
-Patch codes under `bes/`.
+Patched codes are under `bes/`.
 Configure bes with `etc/`.
 
 ## Hyrax DMR++ Test Scripts
