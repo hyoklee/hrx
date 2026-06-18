@@ -41,6 +41,16 @@ public:
     /// Build a DAP2 DAS (text) for the object.
     std::string build_das(const std::string &bucket, const std::string &key, const std::string &name) const;
 
+    /// Read the full data of every dataset in the object (forcing ROS3 to fetch
+    /// the data from S3). Returns the total number of bytes read (sum of the
+    /// datasets' stored sizes). For benchmarking the data path.
+    unsigned long long read_all_data(const std::string &bucket, const std::string &key) const;
+
+    /// Read the full data of a single named dataset (absolute path, e.g. "/CLDPRS").
+    /// Returns bytes read. For benchmarking the data path on large files.
+    unsigned long long read_one_dataset(const std::string &bucket, const std::string &key,
+                                        const std::string &dataset_path) const;
+
 private:
     S3Auth d_auth;
 };

@@ -4,6 +4,44 @@ A BES module that serves HDF5 files stored in **S3** through the HDF5
 **ROS3** virtual file driver, with the bucket's file list cached as an Apache
 **Parquet** index (`index.parquet`). Built to the specification in `claude.md`.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    client(["OPeNDAP client"])
+    idx[("index.parquet<br/>{prefix}/share/hyrax/data/h5s3")]
+    s3[("S3 bucket<br/>localstack / Synology C2")]
+
+    subgraph BES["BES process · beslistener"]
+        direction TB
+        rh["H5S3RequestHandler<br/>(libh5s3_handler.so)"]
+        reader["H5S3Reader<br/>thin HDF5 → DAP"]
+        ros3["HDF5 ROS3 VFD<br/>libhdf5 (+zlib) + AWS C runtime"]
+        rh -->|"DAS / DDS / DMR<br/>for one file"| reader
+        reader -->|"H5Fopen s3://bucket/key"| ros3
+    end
+
+    subgraph HELP["Out-of-process helpers<br/>(isolate Arrow and AWS C++ SDK)"]
+        direction TB
+        list["h5s3_list<br/>AWS C++ SDK"]
+        index["h5s3_index<br/>Arrow / Parquet"]
+        list -->|"TSV: key, size, mtime"| index
+    end
+
+    client -->|"browse / DAP request"| rh
+    rh -. "browse: list files" .-> idx
+    rh -. "build index once<br/>(exec helpers)" .-> list
+    index -->|"write if absent"| idx
+    list ==>|"ListObjectsV2 · SigV4"| s3
+    ros3 ==>|"HTTP(S) range GETs · SigV4"| s3
+```
+
+**Legend:** solid arrows = in-process calls; dashed = index orchestration / lookup;
+thick = network I/O to S3. The two **out-of-process helpers** exist because the
+Arrow/Parquet stack and the AWS C++ SDK each bundle an incompatible AWS SDK and
+cannot share one process (see the note below). The BES module itself links only
+the ROS3 HDF5, and reaches S3 *only* through the ROS3 VFD for data/metadata.
+
 ## What was built
 
 | claude.md step | Status |
@@ -62,22 +100,21 @@ LD_LIBRARY_PATH=$H5/lib:$DEPS/lib ./h5s3_dap dmr cf_2dll_same_dimsize.h5
 
 ## Benchmark (sample data in localstack)
 
-`tests/benchmark.sh`, 5 iterations/file:
+`tests/benchmark.sh`; full analysis in [`PERFORMANCE.md`](PERFORMANCE.md).
 
-| file | bytes | h5s3 DMR (live from S3) | dmrpp build (one-time) |
-|---|---|---|---|
-| comp_complex_scalar.h5 | 1039 | ~91 ms | ~241 ms |
-| SDS_fle_shuf_2def.h5 | 4152 | ~90 ms | ~240 ms |
-| cf_2dll_same_dimsize.h5 | 11056 | ~89 ms | ~248 ms |
-| FakeDim_remove.h5 | 16936 | ~92 ms | ~225 ms |
+| metric | h5s3_handler (ROS3) | dmrpp_module |
+|---|---|---|
+| DMR per request | **~90 ms** (live from S3, size-independent) | **~2–4 ms** (local sidecar) |
+| one-time build per file | **0** | **~10.25 s** (`get_dmrpp_h5`) |
+| crossover | — | **~119 metadata requests** |
 
 **Interpretation.** `h5s3_handler` needs **no preprocessing** but pays ~90 ms of
 S3 round-trips on *every* metadata request (ROS3 opens the file and reads its
-structure live). `dmrpp_module` pays a ~240 ms one-time cost to build the
-`.dmrpp` sidecar, after which it serves the DMR from the **local** sidecar in
-well under 1 ms (no S3 access). Crossover is ~3 metadata requests: dmrpp wins for
-frequently served files; h5s3 wins for one-off / rarely-accessed files and needs
-no sidecar maintenance.
+structure live). `dmrpp_module` pays a one-time ~10 s cost (mostly tool/process
+startup) to build the `.dmrpp` sidecar, after which it serves the DMR from the
+**local** sidecar in a few ms with no S3 access. Break-even is on the order of
+~100 metadata requests per file: dmrpp wins for frequently served, stable files;
+h5s3 wins for one-off / rarely-accessed files and needs no sidecar maintenance.
 
 ## Remaining step: in-server build
 

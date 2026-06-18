@@ -406,4 +406,90 @@ string H5S3Reader::build_das(const string &bucket, const string &key, const stri
     return os.str();
 }
 
+// ---- full data read (benchmark) -------------------------------------------
+
+// Read every dataset under a group, returning total stored bytes read.
+static unsigned long long read_data_group(hid_t loc)
+{
+    unsigned long long total = 0;
+    H5G_info_t gi;
+    H5Gget_info(loc, &gi);
+    for (hsize_t i = 0; i < gi.nlinks; ++i) {
+        char name[1024];
+        H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name, sizeof(name), H5P_DEFAULT);
+        H5O_info2_t oi;
+        if (H5Oget_info_by_idx3(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, &oi, H5O_INFO_BASIC, H5P_DEFAULT) < 0)
+            continue;
+
+        if (oi.type == H5O_TYPE_DATASET) {
+            hid_t dset = H5Dopen2(loc, name, H5P_DEFAULT);
+            if (dset < 0) continue;
+            hid_t space = H5Dget_space(dset);
+            hid_t mtype = H5Tget_native_type(H5Dget_type(dset), H5T_DIR_ASCEND);
+            hssize_t npoints = H5Sget_simple_extent_npoints(space);
+            size_t tsize = H5Tget_size(mtype);
+            if (npoints > 0 && tsize > 0) {
+                size_t nbytes = (size_t)npoints * tsize;
+                void *buf = malloc(nbytes);
+                if (buf) {
+                    // Reading into memory forces ROS3 to fetch the data from S3.
+                    if (H5Dread(dset, mtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf) >= 0) {
+                        total += H5Dget_storage_size(dset);
+                        // Reclaim any variable-length data we just read.
+                        if (H5Tdetect_class(mtype, H5T_VLEN) > 0 ||
+                            (H5Tget_class(mtype) == H5T_STRING && H5Tis_variable_str(mtype) > 0))
+                            H5Dvlen_reclaim(mtype, space, H5P_DEFAULT, buf);
+                    }
+                    free(buf);
+                }
+            }
+            H5Tclose(mtype);
+            H5Sclose(space);
+            H5Dclose(dset);
+        }
+        else if (oi.type == H5O_TYPE_GROUP) {
+            hid_t grp = H5Gopen2(loc, name, H5P_DEFAULT);
+            if (grp >= 0) { total += read_data_group(grp); H5Gclose(grp); }
+        }
+    }
+    return total;
+}
+
+unsigned long long H5S3Reader::read_one_dataset(const string &bucket, const string &key,
+                                                const string &dataset_path) const
+{
+    hid_t fid = open(bucket, key);
+    unsigned long long bytes = 0;
+    hid_t dset = H5Dopen2(fid, dataset_path.c_str(), H5P_DEFAULT);
+    if (dset < 0) { H5Fclose(fid); throw runtime_error("H5S3Reader: cannot open dataset " + dataset_path); }
+    hid_t space = H5Dget_space(dset);
+    hid_t mtype = H5Tget_native_type(H5Dget_type(dset), H5T_DIR_ASCEND);
+    hssize_t npoints = H5Sget_simple_extent_npoints(space);
+    size_t tsize = H5Tget_size(mtype);
+    void *buf = malloc((size_t)npoints * tsize);
+    if (!buf) { H5Tclose(mtype); H5Sclose(space); H5Dclose(dset); H5Fclose(fid);
+                throw runtime_error("H5S3Reader: malloc failed"); }
+    if (H5Dread(dset, mtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf) < 0) {
+        free(buf); H5Tclose(mtype); H5Sclose(space); H5Dclose(dset); H5Fclose(fid);
+        throw runtime_error("H5S3Reader: H5Dread failed for " + dataset_path);
+    }
+    bytes = H5Dget_storage_size(dset);
+    free(buf);
+    H5Tclose(mtype); H5Sclose(space); H5Dclose(dset); H5Fclose(fid);
+    return bytes;
+}
+
+unsigned long long H5S3Reader::read_all_data(const string &bucket, const string &key) const
+{
+    hid_t fid = open(bucket, key);
+    unsigned long long total = 0;
+    try {
+        hid_t root = H5Gopen2(fid, "/", H5P_DEFAULT);
+        total = read_data_group(root);
+        H5Gclose(root);
+    } catch (...) { H5Fclose(fid); throw; }
+    H5Fclose(fid);
+    return total;
+}
+
 } // namespace h5s3

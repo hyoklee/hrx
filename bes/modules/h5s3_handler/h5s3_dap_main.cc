@@ -4,7 +4,10 @@
 // through the HDF5 ROS3 VFD. Links only HDF5 (+ its AWS C runtime) -- no Arrow,
 // no AWS C++ SDK. Connection comes from the environment.
 //
-//   h5s3_dap dmr|dds|das <key>
+//   h5s3_dap dmr|dds|das|data <key>
+//
+// The "data" command reads the full data of every dataset (live from S3 via
+// ROS3) and prints the total bytes read -- for benchmarking the data path.
 
 #include <cstdlib>
 #include <iostream>
@@ -41,6 +44,11 @@ int main(int argc, char **argv)
         if (cmd == "dmr") cout << reader.build_dmr(bucket, key, key);
         else if (cmd == "dds") cout << reader.build_dds(bucket, key, key);
         else if (cmd == "das") cout << reader.build_das(bucket, key, key);
+        else if (cmd == "data") cout << reader.read_all_data(bucket, key) << " bytes\n";
+        else if (cmd == "data1") {
+            if (argc < 4) { cerr << "need <key> <dataset-path>\n"; return 1; }
+            cout << reader.read_one_dataset(bucket, key, argv[3]) << " bytes\n";
+        }
         else { cerr << "unknown command: " << cmd << "\n"; return 1; }
     } catch (const exception &e) {
         cerr << "error: " << e.what() << "\n";
