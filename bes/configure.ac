@@ -1248,6 +1248,15 @@ dnl modules/cmr_module/tests/Makefile
 dnl modules/cmr_module/tests/atlocal
 dnl modules/cmr_module/unit-tests/Makefile
 
+dnl h5s3_handler: serves HDF5 from S3 via the ROS3 VFD. Optional and off by
+dnl default because it needs a ROS3-enabled HDF5 build and the Parquet C++
+dnl library. Enable with --enable-h5s3. jhrg
+AC_ARG_ENABLE([h5s3],
+  [AS_HELP_STRING([--enable-h5s3],
+    [Build the h5s3_handler module (needs a ROS3-enabled HDF5 and Parquet C++). Default: no])],
+  [], [enable_h5s3=no])
+AM_CONDITIONAL([BUILD_H5S3], [test "x$enable_h5s3" = xyes])
+
 AM_COND_IF([DAP_BUILTIN_MODULES],
     [
     AC_CONFIG_FILES([modules/Makefile
@@ -1361,6 +1370,8 @@ AM_COND_IF([DAP_BUILTIN_MODULES],
     modules/hdf5_handler/bes-testsuite/atlocal
     modules/hdf5_handler/gctp/Makefile
     modules/hdf5_handler/gctp/src/Makefile
+
+    modules/h5s3_handler/Makefile
     
     modules/ncml_module/Makefile 
     modules/ncml_module/tests/Makefile 
