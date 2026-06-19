@@ -23,6 +23,7 @@
 #include <BESDMRResponse.h>
 #include <BESDDSResponse.h>
 #include <BESDASResponse.h>
+#include <BESDapNames.h>
 #include <BESDataNames.h>
 #include <BESResponseNames.h>
 #include <BESResponseHandler.h>
@@ -45,7 +46,6 @@ namespace h5s3 {
 H5S3RequestHandler::H5S3RequestHandler(const string &name) : BESRequestHandler(name)
 {
     add_method(DMR_RESPONSE, H5S3RequestHandler::h5s3_build_dmr);
-    add_method(DAP4DATA_RESPONSE, H5S3RequestHandler::h5s3_build_dmr);
     add_method(DDS_RESPONSE, H5S3RequestHandler::h5s3_build_dds);
     add_method(DAS_RESPONSE, H5S3RequestHandler::h5s3_build_das);
     add_method(HELP_RESPONSE, H5S3RequestHandler::h5s3_build_help);
@@ -67,6 +67,8 @@ S3Auth H5S3RequestHandler::auth_from_keys()
     a.access_key = key(H5S3_ACCESS_KEY);
     a.secret_key = key(H5S3_SECRET_KEY);
     a.endpoint = key(H5S3_ENDPOINT_KEY);
+    string ps = key(H5S3_PATHSTYLE_KEY);
+    a.force_path_style = (ps == "true" || ps == "TRUE" || ps == "yes" || ps == "1");
     return a;
 }
 
@@ -123,19 +125,22 @@ bool H5S3RequestHandler::h5s3_build_dds(BESDataHandlerInterface &dhi)
     string obj = key_from_dhi(dhi);
 
     try {
-        // Build the DMR, then derive a DDS from it (libdap conversion).
-        static D4BaseTypeFactory d4f;
-        DMR dmr(&d4f, obj);
         H5S3Reader reader(auth_from_keys());
-        string xml = reader.build_dmr(bucket, obj, obj);
-        D4ParserSax2 parser;
-        parser.intern(xml, &dmr);
+        string dds_text = reader.build_dds(bucket, obj, obj);
 
-        unique_ptr<DDS> derived(dmr.getDDS());
+        char tmpl[] = "/tmp/h5s3_dds_XXXXXX";
+        int fd = mkstemp(tmpl);
+        if (fd < 0)
+            throw BESInternalError("h5s3: cannot create temp file for DDS", __FILE__, __LINE__);
+        { ofstream os(tmpl); os << dds_text; }
         DDS *dds = response->get_dds();
+        // Heap-allocated factory whose lifetime matches the DDS (avoids a
+        // dangling factory pointer during the DDS's own teardown).
+        dds->set_factory(new BaseTypeFactory);
+        dds->parse(string(tmpl));
         dds->set_dataset_name(obj);
-        for (auto i = derived->var_begin(); i != derived->var_end(); ++i)
-            dds->add_var(*i);
+        close(fd);
+        unlink(tmpl);
     }
     catch (const std::exception &e) {
         throw BESInternalError(string("h5s3: ") + e.what(), __FILE__, __LINE__);

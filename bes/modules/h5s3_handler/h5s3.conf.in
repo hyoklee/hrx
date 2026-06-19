@@ -27,10 +27,24 @@ H5S3.Region = us-east-1
 H5S3.AccessKeyId = test
 H5S3.SecretKey = test
 
+# Force path-style S3 URLs. Required for localstack and Synology C2.
+H5S3.ForcePathStyle = true
+
 # --- Index (Parquet) cache ---------------------------------
 # Directory for index.parquet. Browsing this directory lists the
 # bucket's HDF5 files from the cached index.
 H5S3.IndexDir = @datadir@/hyrax/data/h5s3
+
+# --- Browse catalog ----------------------------------------
+# A BES catalog named "h5s3" lists the bucket's HDF5 files from index.parquet.
+# In Hyrax this appears at /opendap/h5s3/contents.html (custom catalogs are
+# top-level, not nested under the default catalog's data/ tree).
+# RootDirectory must be a real directory (BESCatalogUtils requirement).
+BES.Catalog.h5s3.RootDirectory = @datadir@/hyrax/data/h5s3
+BES.Catalog.h5s3.TypeMatch = h5s3:.*\.(h5|he5|HDF5)$;
+BES.Catalog.h5s3.Include = .*;
+BES.Catalog.h5s3.Exclude = ^index\.parquet$;
+BES.Catalog.h5s3.FollowSymLinks = No
 
 # --- Out-of-process helpers --------------------------------
 # The Arrow/Parquet stack bundles a different AWS SDK than the BES,

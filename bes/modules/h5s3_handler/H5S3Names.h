@@ -14,6 +14,7 @@
 #define H5S3_REGION_KEY    "H5S3.Region"        // AWS region (default us-east-1)
 #define H5S3_ACCESS_KEY    "H5S3.AccessKeyId"   // Access key id
 #define H5S3_SECRET_KEY    "H5S3.SecretKey"     // Secret key
+#define H5S3_PATHSTYLE_KEY "H5S3.ForcePathStyle" // "true" to force path-style S3 URLs (localstack/Synology C2)
 
 // Index (Parquet) cache
 #define H5S3_INDEX_DIR_KEY "H5S3.IndexDir"      // Dir for index.parquet (default {prefix}/share/hyrax/data/h5s3)

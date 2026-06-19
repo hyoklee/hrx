@@ -22,6 +22,7 @@ struct S3Auth {
     std::string access_key;            ///< AWS access key id (e.g. "test" for localstack)
     std::string secret_key;            ///< AWS secret key
     std::string endpoint;              ///< Alternate endpoint URL (e.g. http://localhost:4566); empty = real AWS
+    bool force_path_style = false;     ///< Force path-style S3 URLs (needed for localstack and Synology C2)
 };
 
 /// Build DAP responses for an HDF5 object read from S3 via the ROS3 VFD.

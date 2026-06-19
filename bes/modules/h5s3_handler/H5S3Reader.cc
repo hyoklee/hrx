@@ -89,6 +89,11 @@ static string xml_escape(const string &s)
 
 hid_t H5S3Reader::open(const string &bucket, const string &key) const
 {
+    // The ROS3 VFD reads this from the environment to use path-style S3 URLs,
+    // which localstack and Synology C2 require.
+    if (d_auth.force_path_style)
+        setenv("HDF5_ROS3_VFD_FORCE_PATH_STYLE", "true", 1);
+
     H5FD_ros3_fapl_t fa;
     memset(&fa, 0, sizeof(fa));
     fa.version = H5FD_CURR_ROS3_FAPL_T_VERSION;
@@ -242,8 +247,9 @@ static string dds_dims(hid_t space)
     vector<hsize_t> dims(ndims);
     H5Sget_simple_extent_dims(space, dims.data(), nullptr);
     string out;
+    // The DDS grammar wants named dimensions: [name = size].
     for (int i = 0; i < ndims; ++i)
-        out += "[" + to_string((unsigned long long)dims[i]) + "]";
+        out += "[d" + to_string(i) + " = " + to_string((unsigned long long)dims[i]) + "]";
     return out;
 }
 
@@ -318,8 +324,15 @@ string H5S3Reader::build_dds(const string &bucket, const string &key, const stri
     } catch (...) { H5Fclose(fid); throw; }
     H5Fclose(fid);
 
+    // The DDS grammar's dataset name is a simple identifier; sanitize any
+    // characters (e.g. dots in "file.h5") that would confuse the parser.
+    string safe_name = name;
+    for (char &c : safe_name)
+        if (!(isalnum((unsigned char)c) || c == '_'))
+            c = '_';
+
     ostringstream os;
-    os << "Dataset {\n" << body << "} " << name << ";\n";
+    os << "Dataset {\n" << body << "} " << safe_name << ";\n";
     return os.str();
 }
 

@@ -28,7 +28,9 @@ lib_bes_LTLIBRARIES = libh5s3_handler.la
 # The in-process module: ROS3 reader + BES wiring. Links HDF5(ROS3) only --
 # never Arrow or the AWS C++ SDK (kept out of process; see helpers below).
 libh5s3_handler_la_SOURCES = H5S3Module.cc H5S3RequestHandler.cc H5S3Reader.cc \
-                             H5S3Module.h H5S3RequestHandler.h H5S3Reader.h H5S3Names.h
+                             H5S3Container.cc H5S3ContainerStorage.cc H5S3Catalog.cc \
+                             H5S3Module.h H5S3RequestHandler.h H5S3Reader.h \
+                             H5S3Container.h H5S3ContainerStorage.h H5S3Catalog.h H5S3Names.h
 libh5s3_handler_la_CPPFLAGS = $(AM_CPPFLAGS)
 libh5s3_handler_la_LDFLAGS = -avoid-version -module -L$(H5S3_HDF5_PREFIX)/lib
 libh5s3_handler_la_LIBADD = $(LIBADD) -lhdf5
