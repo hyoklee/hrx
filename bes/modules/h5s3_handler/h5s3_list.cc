@@ -5,6 +5,8 @@
 // C++ SDK and the Arrow/Parquet stack (which bundles a different AWS SDK) never
 // share a process. Connection comes from the environment.
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -58,7 +60,13 @@ int main()
             }
             for (const auto &o : outcome.GetResult().GetContents()) {
                 string key = o.GetKey().c_str();
-                if (key.size() >= 3 && key.substr(key.size() - 3) == ".h5")
+                // Match HDF5-family extensions (case-insensitive): .h5 .he5 .hdf5 .nc4
+                auto ends_with = [&key](const string &suf) {
+                    if (key.size() < suf.size()) return false;
+                    return std::equal(suf.rbegin(), suf.rend(), key.rbegin(),
+                                      [](char a, char b){ return ::tolower(a) == ::tolower(b); });
+                };
+                if (ends_with(".h5") || ends_with(".he5") || ends_with(".hdf5") || ends_with(".nc4"))
                     cout << key << "\t" << o.GetSize() << "\t"
                          << o.GetLastModified().ToGmtString(Aws::Utils::DateFormat::ISO_8601).c_str() << "\n";
             }
