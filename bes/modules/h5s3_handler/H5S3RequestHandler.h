@@ -21,6 +21,7 @@ public:
     void dump(std::ostream &strm) const override;
 
     static bool h5s3_build_dmr(BESDataHandlerInterface &dhi);
+    static bool h5s3_build_dap4data(BESDataHandlerInterface &dhi);
     static bool h5s3_build_dds(BESDataHandlerInterface &dhi);
     static bool h5s3_build_das(BESDataHandlerInterface &dhi);
     static bool h5s3_build_help(BESDataHandlerInterface &dhi);

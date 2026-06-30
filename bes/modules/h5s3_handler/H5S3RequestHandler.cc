@@ -36,6 +36,7 @@
 #include <TheBESKeys.h>
 
 #include "H5S3RequestHandler.h"
+#include "H5S3DapBuilder.h"
 #include "H5S3Names.h"
 
 using namespace libdap;
@@ -46,6 +47,7 @@ namespace h5s3 {
 H5S3RequestHandler::H5S3RequestHandler(const string &name) : BESRequestHandler(name)
 {
     add_method(DMR_RESPONSE, H5S3RequestHandler::h5s3_build_dmr);
+    add_method(DAP4DATA_RESPONSE, H5S3RequestHandler::h5s3_build_dap4data);
     add_method(DDS_RESPONSE, H5S3RequestHandler::h5s3_build_dds);
     add_method(DAS_RESPONSE, H5S3RequestHandler::h5s3_build_das);
     add_method(HELP_RESPONSE, H5S3RequestHandler::h5s3_build_help);
@@ -105,6 +107,37 @@ bool H5S3RequestHandler::h5s3_build_dmr(BESDataHandlerInterface &dhi)
         parser.intern(xml, dmr);
         dmr->set_name(obj);
         dmr->set_filename(obj);
+    }
+    catch (const std::exception &e) {
+        dmr->set_factory(nullptr);
+        throw BESInternalError(string("h5s3: ") + e.what(), __FILE__, __LINE__);
+    }
+
+    dmr->set_factory(nullptr);
+    return true;
+}
+
+bool H5S3RequestHandler::h5s3_build_dap4data(BESDataHandlerInterface &dhi)
+{
+    auto *response = dynamic_cast<BESDMRResponse *>(dhi.response_handler->get_response_object());
+    if (!response)
+        throw BESInternalError("Expected a BESDMRResponse", __FILE__, __LINE__);
+
+    DMR *dmr = response->get_dmr();
+    static D4BaseTypeFactory factory;
+    dmr->set_factory(&factory);
+
+    string bucket = key(H5S3_BUCKET_KEY);
+    string obj = key_from_dhi(dhi);
+
+    try {
+        // Build a DMR whose variables read their data live from S3 (ROS3), then
+        // let the framework apply the DAP4 constraint/function and serialize.
+        build_dmr_object(dmr, auth_from_keys(), bucket, obj, obj);
+        dmr->set_filename(obj);
+
+        response->set_dap4_constraint(dhi);
+        response->set_dap4_function(dhi);
     }
     catch (const std::exception &e) {
         dmr->set_factory(nullptr);
