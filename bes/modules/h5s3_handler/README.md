@@ -42,6 +42,23 @@ Arrow/Parquet stack and the AWS C++ SDK each bundle an incompatible AWS SDK and
 cannot share one process (see the note below). The BES module itself links only
 the ROS3 HDF5, and reaches S3 *only* through the ROS3 VFD for data/metadata.
 
+### DAP4 data response (`get.dap`)
+
+`H5S3RequestHandler` registers `DAP4DATA_RESPONSE`, built by `H5S3DapBuilder`.
+Instead of parsing generated DMR *text* (as the metadata DMR does), the builder
+walks the HDF5 file and constructs a DMR of read-capable variables: `H5S3Array`
+and `H5S3Scalar<T>` carry the S3 connection + the dataset's HDF5 path, and their
+`read()` opens the file from S3 (ROS3) and reads the dataset on demand. The
+framework then applies the DAP4 constraint and serializes — so `.dap`,
+`.dap.csv`, and the fileout-netcdf `.dap.nc4` all work, with or without a
+`dap4.ce` subset.
+
+Scope (thin reader): atomic scalars/arrays of integer, float, and string types.
+Compound datasets still appear (as a `Structure`) but are not read. Each
+variable's `read()` re-opens the S3 file, so a whole-file download pays one ROS3
+open per dataset; a future optimization is to share one open file across a
+request.
+
 ## What was built
 
 | claude.md step | Status |
@@ -54,6 +71,7 @@ the ROS3 HDF5, and reaches S3 *only* through the ROS3 VFD for data/metadata.
 | 6–8. Save listing as `index.parquet` (only if absent) | ✅ `h5s3_index` |
 | 9–10. List files from cached index on browse | ✅ `h5s3_index read` |
 | 11–13. DAS/DDS/DODS/DMR via HDF5 ROS3 VFD | ✅ `H5S3Reader` / `h5s3_dap` |
+| 13b. DAP4 **data** response (`get.dap`, `.dap.nc4`) | ✅ `H5S3DapBuilder` (read-capable vars) |
 | 14. Latest HDF5 ROS3 VFD built from `~/src/hdf5` | ✅ installed to `~/hdf5-ros3` |
 | 15. Test against localstack S3 | ✅ validated end-to-end |
 | 16. Benchmark dmrpp_module vs h5s3_handler | ✅ `tests/benchmark.sh` |
@@ -77,6 +95,10 @@ of the BES process entirely.
 ## Files
 
 - `H5S3Reader.{h,cc}` — open `s3://bucket/key` via ROS3, emit DMR/DDS/DAS (thin, self-contained).
+- `H5S3DapBuilder.{h,cc}` — build a DAP4 DMR of **read-capable** variables (atomic
+  scalars and arrays) that fetch their data from S3 on demand, backing the
+  `get.dap` data response (and the fileout-netcdf `.dap.nc4` path). Module-only;
+  depends on libdap, so it is never linked into the libdap-free `h5s3_dap` helper.
 - `H5S3Index.{h,cc}` — read/write `index.parquet` (Arrow/Parquet).
 - `H5S3Module.{h,cc}`, `H5S3RequestHandler.{h,cc}`, `H5S3Names.h` — BES module wiring.
 - `h5s3_list.cc`, `h5s3_index_main.cc`, `h5s3_dap_main.cc` — helper executables.
