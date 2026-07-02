@@ -149,3 +149,63 @@ per-request timeout.) **Kept at 7200 s.**
 
 Together these are what it would take for a remote-S3 h5s3 whole-file download to
 approach dmrpp's throughput. `get.dap` correctness is complete today.
+
+## 7. Performance improvement analysis (2026-07-02)
+
+Grounded in the code on host `matlab` (the running server loads **HDF5 2.2.0**,
+`build/deps/lib/libhdf5.so.1000.0.0`). Full read path traced:
+`H5Dread` → ROS3 VFD `H5FD__ros3_read` → `H5FD__s3comms_s3r_read` (AWS C CRT S3).
+
+**Why it's slow:** cost is dominated by many small, strictly-serial HTTPS range
+GETs to remote S3, multiplied by per-variable file re-opens. Neither HDF5 cache
+helps MERRA2:
+- The ROS3 **64 MB page buffer** (`H5FDros3.c:55`) activates only for files
+  created with `H5F_FSPACE_STRATEGY_PAGE`; MERRA2/netCDF-4 are not paged → inactive.
+- The **16 MB start-of-file cache** (`H5FDros3.c:38`, served at `:1352`) covers
+  only the first 16 MB; past it, one GET per read (`:1362`), no read-ahead.
+- ROS3 registers **NULL** for `read_vector`/`read_selection`
+  (`H5FDros3.c:212–215`), so chunked reads fall back to one-chunk-at-a-time; each
+  `s3r_read` blocks on a condition variable until its single GET completes
+  (`H5FDros3_s3comms.c:1004`) → **zero read concurrency** for chunked data. This
+  is why the repack sped up dmrpp (parallel) but not h5s3 (serial).
+
+### h5s3 handler improvements
+- **A1 — Share one open file handle per request** (biggest, low effort). Each
+  `H5S3Array/H5S3Scalar::read()` calls `reader.open()`→`H5Fopen`
+  (`H5S3DapBuilder.cc:99,166,188`); per variable that spins up a **new
+  `aws_s3_client`** + TLS (`H5FDros3_s3comms.c:741`), **re-reads the 16 MB start
+  cache** (`H5FDros3.c:1038`), and re-reads metadata. For 47 vars ≈ **~730 MB of
+  redundant reads** + 46 client setups. Open once, reuse.
+- **A2 — Honor the DAP constraint** (big for subsets). `read_into()` uses
+  `H5S_ALL` (`H5S3DapBuilder.cc:128`) even for `dap4.ce` subsets → downloads the
+  whole variable, libdap discards the rest. Use `H5Sselect_hyperslab`.
+- **A3 — Drop the temp-buffer + `val2buf` double copy** (minor;
+  `H5S3DapBuilder.cc:120–132`).
+- **A4 — Larger chunk cache (rdcc)** on the fapl (`H5S3Reader.cc:105`; situational).
+
+### HDF5 ROS3 VFD improvements
+- **B1 — Implement `read_vector`** (highest-value, in HDF5). Fan the chunk range
+  GETs out concurrently through the AWS CRT client instead of serial blocking
+  reads. `H5FDros3.c:212–215` are NULL today.
+- **B2 — Reuse the S3 client across opens** (`H5FDros3_s3comms.c:741`; the
+  event-loop group is already global at `:229`).
+- **B3 — Set `client_config` throughput/part-size** (`:737`; defaults today).
+- **B4 — General VFD block cache / read-ahead** for non-paged files.
+
+### Data-side lever (no code)
+- **C — Repack granules with paged aggregation** (`h5repack -S PAGE -G <size>`) so
+  the 64 MB ROS3 page buffer actually engages.
+
+## 8. Optimization experiments (results)
+
+Benchmark: full-file `.dap.nc4` (`get.dap`→FONC) of the **original** granule
+`MERRA2_200.tavg1_2d_slv_Nx.19970918.nc4`, end-to-end `curl` time, unless noted.
+Baselines from §4: **h5s3 3097.5 s**, dmrpp 491.6 s.
+
+| Step | Change | time_total | vs baseline | notes |
+|---|---|---|---|---|
+| baseline | as-shipped get.dap | 3097.5 s | — | 47 vars, ~474 MiB |
+| A1 | shared open handle | _pending_ | | |
+| B1 | ROS3 `read_vector` | _pending_ | | |
+| A2 | constraint pushdown | _pending_ | | subset benchmark |
+| B2+B3 | client reuse + config | _pending_ | | |
