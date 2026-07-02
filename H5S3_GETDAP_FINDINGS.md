@@ -205,7 +205,72 @@ Baselines from §4: **h5s3 3097.5 s**, dmrpp 491.6 s.
 | Step | Change | time_total | vs baseline | notes |
 |---|---|---|---|---|
 | baseline | as-shipped get.dap | 3097.5 s | — | 47 vars, ~474 MiB |
-| A1 | shared open handle | _pending_ | | |
-| B1 | ROS3 `read_vector` | _pending_ | | |
-| A2 | constraint pushdown | _pending_ | | subset benchmark |
-| B2+B3 | client reuse + config | _pending_ | | |
+| A1 | shared open handle | 2638.4 s | −14.8 % (1.17×) | 47 vars ✓; `/lon` 7.6→3.5 s |
+| B1 | + ROS3 `read_vector` | 2666.9 s | −13.9 % vs base; ≈A1 | data identical ✓; no gain over A1 |
+| A2 | + constraint pushdown | 3.76 s | ~15× vs 57.6 s | subset `T2M[0][100:199][100:199]`; **also fixes wrong-data bug** |
+| B3 | + CRT tuning (part/conn) | 2589.5 s | −16.4 % vs base; ≈A1 | full file; data ✓; ~2 % over A1 |
+
+(B2 "reuse S3 client across opens" was subsumed by A1: after A1 there is only one
+open per request, so a global client saves almost nothing. Not separately built.)
+
+### Root cause (why B1/B3 barely moved the full-file number)
+
+A standalone ROS3 probe (`probe.c`, patched HDF5, `HDF5_ROS3_VFD_DEBUG=1`) reading
+`/T2M` (20 MB) directly, bypassing BES/FONC:
+
+```
+RESULT dataset=/T2M npoints=4990464 bytes=19961856 read_ok=1 open_s=3.05 read_s=52.02
+GET count: 397   (1 × 16 MB start-cache + 396 tiny chunk GETs, ~3 KB–19 KB each)
+```
+
+- The bottleneck is the **ROS3 read itself (52 s)**, not FONC — one variable is
+  stored as ~**396 small chunks**, each fetched by its own GET, ~131 ms apart →
+  **latency-bound on hundreds of serial small GETs**.
+- **`read_vector` (B1) is never called for these reads.** All 397 GETs are logged
+  by the *scalar* `s3r_read` path (the `read_vector` path has no such log). HDF5's
+  **chunked-dataset read path fetches each chunk via a scalar block read through
+  the chunk cache and does not route through `read_vector`** — even with selection
+  I/O **forced on** (`H5Pset_selection_io(..., ON)`): still 397 scalar GETs, 52 s.
+  So the concurrency machinery (B1) and the CRT tuning that feeds it (B3) have
+  nothing to accelerate. `read_vector` only fires for contiguous-dataset reads and
+  some metadata, not per-chunk raw data.
+
+### What would actually work (updated recommendations)
+
+1. **A1 + A2**: keep — real, safe wins (open reuse; subset pushdown + correctness).
+2. **Fewer/larger chunks in the data** (biggest lever for this access pattern):
+   the file has ~400 chunks/variable. Rewriting with larger chunks (or paged
+   aggregation, so the 64 MB page buffer also engages) collapses hundreds of
+   small GETs into a handful. `h5repack -l CHUNK=... ` / `-S PAGE`.
+3. **Batch chunk reads into `read_vector` inside HDF5** — the only way to make B1
+   pay off; requires changing HDF5's chunk-read path (`H5D__chunk_read` / chunk
+   cache) to gather multiple chunk addresses and issue one vector read. Deep core
+   change, not done here.
+4. **VFD-level read-ahead cache** for chunked non-paged files: partially helps,
+   but this file's chunks are strided ~1.1 MB apart (interleaved across variables),
+   so naive contiguous read-ahead wastes bandwidth.
+
+The HDF5 `read_vector`/CRT-tuning patch is correct and committed
+(`hdf5-ros3-patches/ros3_readvector_crttuning.patch`); it simply isn't exercised
+by chunked raw-data reads in this HDF5 version. It remains the right foundation
+for improvement (2) or (3).
+
+**Probe on the repack file confirms (2):** `/T2M` in `…repack.nc4` also needs
+~398 GETs, many just **53–512 bytes** (chunk B-tree index nodes) → the existing
+repack did *not* enlarge chunks, which is exactly why it never sped up h5s3
+(while it did help dmrpp's parallel reader). A repack with genuinely large chunks
+is required to cut the GET count.
+
+### Final numbers (original granule, full `.dap.nc4`)
+
+| config | time | vs baseline |
+|---|---|---|
+| baseline (as-shipped get.dap) | 3097.5 s | — |
+| A1 (shared handle) | 2638.4 s | −14.8 % |
+| A1+B1 | 2666.9 s | −13.9 % |
+| A1+A2+B1+B3 (all) | 2589.5 s | −16.4 % |
+| dmrpp (reference) | 491.6 s | — |
+
+Net: the code optimizations reach ~16 % on whole-file download; closing the gap
+to dmrpp needs the data-layout fix (2) and/or the deeper HDF5 chunk-vectorization
+(3). A2 additionally makes **subset** requests ~15× faster and correct.

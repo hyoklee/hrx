@@ -60,29 +60,30 @@ static hid_t native_for(Type t)
 
 // ---- shared data read (called lazily by a variable's read()) ---------------
 
-// Read every string element of a dataset (fixed- or variable-length) into @p out.
-static void read_strings(hid_t dset, hid_t fspace, hid_t ftype,
-                         hssize_t npoints, vector<string> &out)
+// Read @p nsel string elements of a dataset (fixed- or variable-length) into
+// @p out, honoring the given memory/file dataspace selection.
+static void read_strings(hid_t dset, hid_t memspace, hid_t fspace_sel, hid_t ftype,
+                         size_t nsel, vector<string> &out)
 {
-    if (npoints <= 0)
+    if (nsel == 0)
         return;
     hid_t mtype = H5Tcopy(H5T_C_S1);
     if (H5Tis_variable_str(ftype) > 0) {
         H5Tset_size(mtype, H5T_VARIABLE);
-        vector<char *> ptrs((size_t) npoints, nullptr);
-        if (H5Dread(dset, mtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, ptrs.data()) >= 0) {
-            for (hssize_t i = 0; i < npoints; ++i)
+        vector<char *> ptrs(nsel, nullptr);
+        if (H5Dread(dset, mtype, memspace, fspace_sel, H5P_DEFAULT, ptrs.data()) >= 0) {
+            for (size_t i = 0; i < nsel; ++i)
                 out[i] = ptrs[i] ? ptrs[i] : "";
-            H5Dvlen_reclaim(mtype, fspace, H5P_DEFAULT, ptrs.data());
+            H5Dvlen_reclaim(mtype, memspace, H5P_DEFAULT, ptrs.data());
         }
     }
     else {
         size_t sz = H5Tget_size(ftype);
         H5Tset_size(mtype, sz);
-        vector<char> buf((size_t) npoints * sz);
-        if (H5Dread(dset, mtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data()) >= 0) {
-            for (hssize_t i = 0; i < npoints; ++i) {
-                const char *p = buf.data() + (size_t) i * sz;
+        vector<char> buf(nsel * sz);
+        if (H5Dread(dset, mtype, memspace, fspace_sel, H5P_DEFAULT, buf.data()) >= 0) {
+            for (size_t i = 0; i < nsel; ++i) {
+                const char *p = buf.data() + i * sz;
                 out[i] = string(p, strnlen(p, sz));
             }
         }
@@ -90,29 +91,112 @@ static void read_strings(hid_t dset, hid_t fspace, hid_t ftype,
     H5Tclose(mtype);
 }
 
-// Open s3://<bucket>/<key>, read the dataset at @p path in full, and store the
-// values into the libdap variable @p bt (an Array or an atomic scalar).
+// ---- A1: per-request shared open file handle -------------------------------
+//
+// Opening an S3 file is expensive: a fresh ROS3 open spins up a new AWS S3
+// client + TLS connection and re-reads the 16 MB start-of-file cache plus the
+// file metadata. The previous design re-opened the file for every variable's
+// read() (and once more to build the DMR), so a 47-variable file paid that cost
+// ~48 times. Since all variables of one request share the same (bucket, key),
+// we cache the open handle in thread-local storage and reuse it: the file is
+// opened once and reused for the DMR walk and every variable read. It is closed
+// lazily when a different (bucket, key) is requested, or at thread exit.
+//
+// This is safe because a BES worker serves one request at a time and the DAP4
+// serialization that drives read() runs on a single thread; thread-local
+// storage isolates workers from each other.
+namespace {
+struct OpenFileCache {
+    string bucket;
+    string key;
+    hid_t  fid = -1;
+    ~OpenFileCache() { if (fid >= 0) H5Fclose(fid); }
+};
+thread_local OpenFileCache tls_open_file;
+
+// Return an open file id for s3://<bucket>/<key>, reusing the cached handle when
+// it matches. The returned id is owned by the cache -- callers must NOT close it.
+hid_t acquire_shared_file(const S3Auth &auth, const string &bucket, const string &key)
+{
+    if (tls_open_file.fid >= 0 && tls_open_file.bucket == bucket && tls_open_file.key == key)
+        return tls_open_file.fid;
+
+    if (tls_open_file.fid >= 0) {
+        H5Fclose(tls_open_file.fid);
+        tls_open_file.fid = -1;
+    }
+
+    H5S3Reader reader(auth);
+    hid_t fid = reader.open(bucket, key);   // throws on failure; cache stays empty
+    tls_open_file.bucket = bucket;
+    tls_open_file.key = key;
+    tls_open_file.fid = fid;
+    return fid;
+}
+} // namespace
+
+// Open s3://<bucket>/<key>, read the dataset at @p path, and store the values
+// into the libdap variable @p bt (an Array or an atomic scalar).
+//
+// A2: for arrays, only the projected hyperslab (the DAP4 constraint's
+// start/stride/count per dimension) is read from S3 rather than the whole
+// dataset. This makes `dap4.ce` subset requests cheap and is also required for
+// correctness -- reading the whole dataset and copying the first length()
+// elements would return wrong values for any offset/strided subset.
 static void read_into(const S3Auth &auth, const string &bucket, const string &key,
                       const string &path, BaseType *bt)
 {
-    H5S3Reader reader(auth);
-    hid_t fid = reader.open(bucket, key);
-    hid_t dset = -1, fspace = -1, ftype = -1;
+    hid_t fid = acquire_shared_file(auth, bucket, key);   // shared; do not close
+    hid_t dset = -1, fspace = -1, ftype = -1, memspace = -1;
     try {
         dset = H5Dopen2(fid, path.c_str(), H5P_DEFAULT);
         if (dset < 0)
             throw runtime_error("cannot open dataset " + path);
         fspace = H5Dget_space(dset);
         ftype = H5Dget_type(dset);
-        hssize_t npoints = H5Sget_simple_extent_npoints(fspace);
-        if (npoints < 0) npoints = 0;
 
         auto *arr = dynamic_cast<Array *>(bt);
         Type et = arr ? arr->var()->type() : bt->type();
 
+        // Build the file-space selection and the matching memory space. For an
+        // array we translate the (constrained) DAP dimensions into an HDF5
+        // hyperslab; when the request is unconstrained this selects everything.
+        // For a scalar we read the whole (scalar) dataset.
+        hid_t   file_sel = H5S_ALL;   // what to pass to H5Dread as file space
+        size_t  nsel     = 1;         // number of elements selected
+        int     rank     = H5Sget_simple_extent_ndims(fspace);
+
+        if (arr && rank > 0 && arr->dimensions() == (unsigned) rank) {
+            vector<hsize_t> start(rank), stride(rank), count(rank);
+            int i = 0;
+            for (Array::Dim_iter d = arr->dim_begin(); d != arr->dim_end(); ++d, ++i) {
+                start[i]  = (hsize_t) arr->dimension_start_ll(d, true);
+                stride[i] = (hsize_t) arr->dimension_stride_ll(d, true);
+                count[i]  = (hsize_t) arr->dimension_size_ll(d, true);
+            }
+            if (H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start.data(), stride.data(),
+                                    count.data(), nullptr) < 0)
+                throw runtime_error("hyperslab selection failed for " + path);
+            memspace = H5Screate_simple(rank, count.data(), nullptr);
+            if (memspace < 0)
+                throw runtime_error("memory space creation failed for " + path);
+            file_sel = fspace;
+            nsel = 1;
+            for (int k = 0; k < rank; ++k) nsel *= (size_t) count[k];
+        }
+        else {
+            // Scalar (or unexpected rank mismatch): read the whole dataset. Use
+            // the dataset's own space for both memory and file so vlen reclaim
+            // has a valid dataspace.
+            memspace = H5Scopy(fspace);
+            file_sel = fspace;
+            hssize_t np = H5Sget_simple_extent_npoints(fspace);
+            nsel = (np > 0) ? (size_t) np : 0;
+        }
+
         if (et == dods_str_c || et == dods_url_c) {
-            vector<string> strs((size_t) npoints);
-            read_strings(dset, fspace, ftype, npoints, strs);
+            vector<string> strs(nsel);
+            read_strings(dset, memspace, file_sel, ftype, nsel, strs);
             if (arr)
                 arr->set_value(strs, (int) strs.size());
             else if (!strs.empty())
@@ -123,26 +207,26 @@ static void read_into(const S3Auth &auth, const string &bucket, const string &ke
             if (nt < 0)
                 throw runtime_error("unsupported element type for " + path);
             size_t esz = H5Tget_size(nt);
-            vector<unsigned char> buf((size_t) npoints * esz);
-            if (npoints > 0 &&
-                H5Dread(dset, nt, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data()) < 0)
+            vector<unsigned char> buf(nsel * esz);
+            if (nsel > 0 &&
+                H5Dread(dset, nt, memspace, file_sel, H5P_DEFAULT, buf.data()) < 0)
                 throw runtime_error("H5Dread failed for " + path);
-            // val2buf copies the row-major buffer into the variable, for both
-            // arrays (npoints elements) and scalars (1 element).
+            // val2buf copies the row-major buffer into the variable; for a
+            // constrained array nsel == bt->length().
             bt->val2buf(buf.data());
         }
     }
     catch (...) {
+        if (memspace >= 0) H5Sclose(memspace);
         if (ftype >= 0) H5Tclose(ftype);
         if (fspace >= 0) H5Sclose(fspace);
         if (dset >= 0) H5Dclose(dset);
-        H5Fclose(fid);
-        throw;
+        throw;   // fid is owned by the thread-local cache; do not close here
     }
+    if (memspace >= 0) H5Sclose(memspace);
     H5Tclose(ftype);
     H5Sclose(fspace);
     H5Dclose(dset);
-    H5Fclose(fid);
 }
 
 // ---- read-capable variable types -------------------------------------------
@@ -359,20 +443,20 @@ void build_dmr_object(DMR *dmr, const S3Auth &auth, const string &bucket,
 {
     dmr->set_name(name);
 
-    H5S3Reader reader(auth);
-    hid_t fid = reader.open(bucket, key);
+    // Shared handle (A1): opened here for the structure walk and reused by every
+    // variable's read() during serialization. Owned by the thread-local cache.
+    hid_t fid = acquire_shared_file(auth, bucket, key);
+    hid_t root = H5Gopen2(fid, "/", H5P_DEFAULT);
+    if (root < 0)
+        throw runtime_error("cannot open root group of " + key);
     try {
-        hid_t root = H5Gopen2(fid, "/", H5P_DEFAULT);
-        if (root < 0)
-            throw runtime_error("cannot open root group of " + key);
         walk_group(root, "/", dmr->root(), auth, bucket, key);
-        H5Gclose(root);
     }
     catch (...) {
-        H5Fclose(fid);
+        H5Gclose(root);
         throw;
     }
-    H5Fclose(fid);
+    H5Gclose(root);
 }
 
 } // namespace h5s3
