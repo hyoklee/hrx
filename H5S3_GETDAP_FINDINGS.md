@@ -274,3 +274,39 @@ is required to cut the GET count.
 Net: the code optimizations reach ~16 % on whole-file download; closing the gap
 to dmrpp needs the data-layout fix (2) and/or the deeper HDF5 chunk-vectorization
 (3). A2 additionally makes **subset** requests ~15× faster and correct.
+
+## 9. h5s3 vs dmrpp on subsets, same S3 backend (2026-07-02)
+
+Direct **subset** comparison, both paths reading the **same** Synology C2 object
+(`iowarp/MERRA2_200.tavg1_2d_slv_Nx.19970918.nc4`): h5s3 live via the ROS3 VFD,
+dmrpp via byte-range GETs from the **`.c2.dmrpp`** sidecar (same endpoint, *not*
+the localstack sidecar). `get.dap` → fileout-netcdf, end-to-end `curl`, warm
+server, `T2M` subsets of increasing size. **Output data verified identical**
+(`np.allclose`) on every subset.
+
+| subset of `/T2M` | elements | output | h5s3 (ROS3 live) min/avg | dmrpp (C2) min/avg | h5s3 ÷ dmrpp |
+|---|---:|---:|---|---|---:|
+| `[0][100:199][100:199]` | 1×100×100 (1e4) | ~28 KB | 0.58 / 0.74 s | 0.38 / 0.43 s | **~1.7×** |
+| `[0:0][0:360][0:575]` | 1×361×576 (2.1e5) | ~0.4 MB | 2.31 / 2.72 s | 0.41 / 0.48 s | **~5.6×** |
+| `[0:23]…` (whole var) | 24×361×576 (5.0e6) | ~9.5 MB¹ | 59.8 s (1 shot) | 7.6 s (1 shot) | **~7.9×** |
+
+¹ h5s3 output ~9.5 MB vs dmrpp ~6.7 MB — the same FONC re-compression effect as
+§4 (data values identical).
+
+**Findings:**
+- **A2 constraint pushdown made h5s3 subsets viable and near-competitive for
+  small requests.** For a tiny 1e4-point subset h5s3 is only ~1.7× slower than
+  dmrpp (0.74 s vs 0.43 s) — a different regime from the 6–22× whole-file gap.
+- **The gap re-widens with subset size** (1.7× → 5.6× → 7.9×). More elements ⇒
+  more chunks touched; h5s3/ROS3 fetches them **serially** while dmrpp fetches
+  chunk byte-ranges **in parallel**. So the advantage is dmrpp's chunk
+  parallelism, and it scales with the number of chunks in the selection — the
+  same root cause as §7/§8, not a per-request fixed cost.
+- Both handlers reject a scalar-collapsing index like `/T2M[0]` with HTTP 400
+  (FONC); use explicit ranges (`[0:0]`) to keep the dimension.
+
+Plot: `py/h5s3_dmrpp_subset_perf.py` → `py/h5s3_dmrpp_subset_perf.png`.
+
+Caveat: warm-server, low-iteration numbers over a shared WAN link (the small
+subset varied 0.58–1.17 s across runs); read as order-of-magnitude. The earlier
+§8 single-shot subset figure (3.76 s) was a cold first hit — warm it is ~0.6–0.9 s.
