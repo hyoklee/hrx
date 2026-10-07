@@ -27,6 +27,7 @@
 #ifndef AWS_SDK_H
 #define AWS_SDK_H
 
+#include <mutex>
 #include <string>
 
 #include <aws/core/Aws.h>
@@ -41,6 +42,11 @@ namespace bes
         Aws::S3::S3Client d_s3_client;
         bool d_is_s3_client_initialized = false;
         static Aws::SDKOptions options;
+
+        // libbes_aws is a convenience library linked into each module that uses it. These are
+        // exported class members so modules dlopen()ed with RTLD_GLOBAL share one instance.
+        static std::mutex aws_library_mutex;
+        static unsigned int aws_library_ref_count;
 
         void throw_if_s3_client_uninitialized() const; // throws BESInternalFatalError
 
@@ -58,15 +64,10 @@ namespace bes
         AWS_SDK(const AWS_SDK &&) = delete;
         AWS_SDK &operator=(const AWS_SDK &&) = delete;
 
-        static void aws_library_initialize()
-        {
-            Aws::InitAPI(options); // Must only be called once, as per AWS SDK
-        }
-
-        static void aws_library_shutdown()
-        {
-            Aws::ShutdownAPI(options);
-        }
+        // Reference counted so that several modules can share the SDK. Aws::InitAPI() runs on the
+        // first call and Aws::ShutdownAPI() on the matching last call to aws_library_shutdown().
+        static void aws_library_initialize();
+        static void aws_library_shutdown();
 
         void initialize_s3_client(const std::string &region, const std::string &aws_key,
                                    const std::string &aws_secret_key,

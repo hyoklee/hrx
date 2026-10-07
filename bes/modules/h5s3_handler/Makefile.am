@@ -19,7 +19,8 @@ AM_CPPFLAGS += -DMODULE_NAME=\"$(M_NAME)\" -DMODULE_VERSION=\"$(M_VER)\"
 LIBADD = $(BES_DISPATCH_LIB) $(BES_HTTP_LIB) $(DAP_SERVER_LIBS) $(DAP_CLIENT_LIBS)
 
 if USE_AWS_SDK
-AM_CPPFLAGS += -I$(aws_prefix)/include
+AM_CPPFLAGS += -I$(top_srcdir)/aws -I$(aws_prefix)/include
+LIBADD += $(top_builddir)/aws/libbes_aws.la $(aws_libs)
 endif
 
 lib_besdir = $(libdir)/bes

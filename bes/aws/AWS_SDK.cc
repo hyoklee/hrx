@@ -51,6 +51,25 @@ namespace bes {
 
 Aws::SDKOptions AWS_SDK::options;
 
+std::mutex AWS_SDK::aws_library_mutex;
+unsigned int AWS_SDK::aws_library_ref_count = 0;
+
+void AWS_SDK::aws_library_initialize()
+{
+    std::lock_guard<std::mutex> lock(aws_library_mutex);
+    if (aws_library_ref_count++ == 0)
+        Aws::InitAPI(options); // Must only be called once, as per AWS SDK
+}
+
+void AWS_SDK::aws_library_shutdown()
+{
+    std::lock_guard<std::mutex> lock(aws_library_mutex);
+    if (aws_library_ref_count == 0)
+        return;
+    if (--aws_library_ref_count == 0)
+        Aws::ShutdownAPI(options);
+}
+
 
 /**
  * @brief Get an S3 Client.

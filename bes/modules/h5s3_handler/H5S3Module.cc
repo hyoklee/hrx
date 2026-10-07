@@ -4,6 +4,8 @@
 
 #include "config.h"
 
+#include <hdf5.h>
+
 #include <BESRequestHandlerList.h>
 #include <BESContainerStorageList.h>
 #include <BESCatalogList.h>
@@ -16,6 +18,10 @@
 #include "H5S3Catalog.h"
 #include "H5S3Names.h"
 
+#ifdef HAVE_AWS_S3_S3CLIENT_H
+#include "AWS_SDK.h"
+#endif
+
 using namespace std;
 
 namespace h5s3 {
@@ -23,6 +29,12 @@ namespace h5s3 {
 void H5S3Module::initialize(const string &modname)
 {
     BESDEBUG(modname, "Initializing h5s3 module " << modname << endl);
+
+#ifdef HAVE_AWS_S3_S3CLIENT_H
+    // Hold a reference on the AWS SDK so Aws::ShutdownAPI() cannot run before terminate() has
+    // released the ROS3 VFD's AWS CRT threads (see terminate()).
+    bes::AWS_SDK::aws_library_initialize();
+#endif
 
     BESRequestHandlerList::TheList()->add_handler(modname, new H5S3RequestHandler(modname));
 
@@ -49,6 +61,16 @@ void H5S3Module::terminate(const string &modname)
     BESContainerStorageList::TheList()->deref_persistence(modname);
 
     BESCatalogList::TheCatalogList()->deref_catalog(modname);
+
+    // The ROS3 VFD owns an aws-c-io event loop group whose threads are "managed" aws-c-common
+    // threads. Aws::ShutdownAPI() joins all managed threads, so it hangs unless ROS3 releases
+    // them first. H5close() does that (with the patched ROS3 VFD); the default cleanup only
+    // happens in an atexit() handler, after the modules have been terminated.
+    H5close();
+
+#ifdef HAVE_AWS_S3_S3CLIENT_H
+    bes::AWS_SDK::aws_library_shutdown();
+#endif
 
     BESDEBUG(modname, "Done cleaning h5s3 module " << modname << endl);
 }
